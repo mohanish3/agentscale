@@ -1,0 +1,17 @@
+{
+  "name": "agentscale",
+  "version": "0.1.0",
+  "private": true,
+  "description": "On-demand AWS cloud infra for agent workers, with native integrations, n8n, and LangChain server support.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^5.2.1"
+  }
+}
