@@ -32,18 +32,25 @@ Run tests: `npm test` (Node's built-in test runner, no extra dependencies).
 
 ## API
 
-| Endpoint | Purpose |
-| --- | --- |
-| `GET /health` | Liveness. |
-| `POST /integrations/:provider/webhook` | Verified inbound webhook. `provider` is `github`, `stripe` or `generic`. |
-| `POST /n8n/workflows` | Ingest an n8n workflow export; returns its dependency-ordered steps. |
-| `POST /langchain/servers` | Register a LangChain server: `{ "name": "...", "url": "https://..." }`. |
-| `GET /langchain/servers` | List registered servers. |
-| `POST /langchain/servers/:name/dispatch` | Invoke a registered server with `{ "input": ... }`. |
-| `POST /orchestrator/scale` | Recompute desired worker count from queue depth. Optional body: `tasksPerWorker`, `min`, `max`. |
-| `GET /orchestrator/workers` | Desired count, queue depth and per-worker health. |
-| `POST /orchestrator/workers/:id/heartbeat` | Worker liveness ping (workers are unhealthy after 30s of silence). |
-| `POST /tasks/next` | Worker pulls the next queued task; `204` when the queue is empty. |
+| Endpoint | Auth | Purpose |
+| --- | --- | --- |
+| `GET /health` | public | Liveness. |
+| `POST /integrations/:provider/webhook` | signature | Verified inbound webhook. `provider` is `github`, `stripe` or `generic`. |
+| `POST /n8n/workflows` | token | Ingest an n8n workflow export; returns its dependency-ordered steps. |
+| `POST /langchain/servers` | token | Register a LangChain server: `{ "name": "...", "url": "https://..." }`. |
+| `GET /langchain/servers` | token | List registered servers. |
+| `POST /langchain/servers/:name/dispatch` | token | Invoke a registered server with `{ "input": ... }`. |
+| `POST /orchestrator/scale` | token | Recompute desired worker count from queue depth. Optional body: `tasksPerWorker`, `min`, `max`. |
+| `GET /orchestrator/workers` | token | Desired count, queue depth and per-worker health. |
+| `POST /orchestrator/workers/:id/heartbeat` | token | Worker liveness ping (workers are unhealthy after 30s of silence). |
+| `POST /tasks/next` | token | Worker pulls the next queued task; `204` when the queue is empty. |
+
+### Worker/control auth
+
+Everything marked `token` above requires `Authorization: Bearer $WORKER_TOKEN` — draining the
+queue exposes every task payload, and registering a LangChain server decides where task input
+gets sent. As with the webhook secrets, an unset `WORKER_TOKEN` **refuses** (`503`) rather than
+serving these open.
 
 ### Webhook secrets
 
@@ -55,6 +62,9 @@ whose secret is unset is **rejected** (`503`), never accepted unverified.
 | `github` | `GITHUB_WEBHOOK_SECRET` | `X-Hub-Signature-256` |
 | `stripe` | `STRIPE_WEBHOOK_SECRET` | `Stripe-Signature` |
 | `generic` | `GENERIC_WEBHOOK_SECRET` | `X-Signature-256` |
+
+Stripe signatures are additionally rejected outside a 5-minute tolerance window, so a captured
+request cannot be replayed indefinitely.
 
 ## Project layout
 

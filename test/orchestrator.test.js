@@ -21,11 +21,13 @@ test('rejects nonsense scaling config', () => {
 });
 
 test('a stale heartbeat reads as unhealthy', async () => {
+  process.env.WORKER_TOKEN = 'test-worker-token';
+  const auth = { authorization: 'Bearer test-worker-token' };
   const server = app.listen(0);
   const base = `http://localhost:${server.address().port}`;
   try {
-    await fetch(`${base}/orchestrator/workers/w1/heartbeat`, { method: 'POST' });
-    const { workers } = await (await fetch(`${base}/orchestrator/workers`)).json();
+    await fetch(`${base}/orchestrator/workers/w1/heartbeat`, { method: 'POST', headers: auth });
+    const { workers } = await (await fetch(`${base}/orchestrator/workers`, { headers: auth })).json();
     assert.deepEqual(workers.map((w) => [w.id, w.healthy]), [['w1', true]]);
     assert.equal(workerHealth(Date.now() + HEARTBEAT_TTL_MS + 1)[0].healthy, false);
   } finally {

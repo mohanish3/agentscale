@@ -2,6 +2,8 @@ const crypto = require('node:crypto');
 const express = require('express');
 const queue = require('../queue');
 
+const STRIPE_TOLERANCE_S = 300;
+
 function hmacHex(secret, data) {
   return crypto.createHmac('sha256', secret).update(data).digest('hex');
 }
@@ -36,6 +38,8 @@ const providers = {
     verify: (secret, req) => {
       const { t, v1 } = parseCommaSigned(req.get('stripe-signature'));
       if (!t || !v1) return false;
+      // Without a tolerance window a captured request replays forever.
+      if (!(Math.abs(Date.now() / 1000 - Number(t)) <= STRIPE_TOLERANCE_S)) return false;
       const signed = Buffer.concat([Buffer.from(`${t}.`), req.rawBody]);
       return safeEqual(v1, hmacHex(secret, signed));
     },
