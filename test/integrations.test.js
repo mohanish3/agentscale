@@ -65,6 +65,29 @@ test('unconfigured secret refuses rather than accepting unverified', async () =>
   assert.equal(queue.depth(), 0);
 });
 
+test('a redelivered webhook is accepted but only runs once', async () => {
+  const body = JSON.stringify({ action: 'opened' });
+  const headers = { 'x-hub-signature-256': sign(body), 'x-github-delivery': 'delivery-abc' };
+
+  const first = await post('/integrations/github/webhook', body, headers);
+  const retry = await post('/integrations/github/webhook', body, headers);
+
+  assert.equal(first.status, 202);
+  assert.equal(retry.status, 202, 'a retry must not look like an error, or the provider keeps retrying');
+  assert.equal((await retry.json()).taskId, (await first.json()).taskId);
+  assert.equal(queue.depth(), 1, 'GitHub redelivery must not run the agent twice');
+});
+
+test('distinct deliveries of the same payload both enqueue', async () => {
+  const body = JSON.stringify({ action: 'opened' });
+  const signature = sign(body);
+
+  await post('/integrations/github/webhook', body, { 'x-hub-signature-256': signature, 'x-github-delivery': 'one' });
+  await post('/integrations/github/webhook', body, { 'x-hub-signature-256': signature, 'x-github-delivery': 'two' });
+
+  assert.equal(queue.depth(), 2, 'identical payloads are legitimately separate events');
+});
+
 test('unknown provider is 404', async () => {
   const res = await post('/integrations/nope/webhook', '{}');
   assert.equal(res.status, 404);

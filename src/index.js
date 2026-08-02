@@ -46,14 +46,16 @@ app.use('/orchestrator', requireWorkerToken, orchestrator.router);
 
 // Workers pull from the same queue everything else dispatches into.
 app.post('/tasks/next', requireWorkerToken, (req, res) => {
-  const task = queue.dequeue();
-  if (!task) return res.status(204).end();
-  queue.markRunning(task.id);
-  res.json(task);
+  const task = queue.lease();
+  return task ? res.json(task) : res.status(204).end();
 });
 
+// Reporting an outcome is what releases the lease. A failure is requeued until the task runs
+// out of attempts, so a flaky agent run is not terminal on the first try.
 app.post('/tasks/:id/result', requireWorkerToken, (req, res) => {
-  queue.recordResult(req.params.id, req.body ?? {});
+  const { status, result, error } = req.body ?? {};
+  if (status === 'succeeded') queue.ack(req.params.id, { status, result });
+  else queue.nack(req.params.id, error);
   res.status(204).end();
 });
 

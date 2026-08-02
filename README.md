@@ -18,6 +18,26 @@ Two processes: an **API** (`src/index.js`) that receives work, and a **worker** 
 that executes it. Everything dispatches into one queue (`src/queue.js`); workers pull from it
 with `POST /tasks/next`, run the task, and report the outcome to `POST /tasks/:id/result`.
 
+## Delivery guarantees
+
+Tasks are delivered **at least once**. A worker leases a task rather than removing it, and the
+lease expires unless the worker reports back — so a worker that crashes mid-task doesn't take
+the task with it. A reported failure is retried the same way. After `TASK_MAX_ATTEMPTS`
+deliveries (default 3) a task is given up on and marked `failed`, so one poison task can't cycle
+forever.
+
+Two consequences worth designing around:
+
+- **Your agent must tolerate running twice.** At-least-once means a redelivery can duplicate work
+  that already partly happened.
+- **`TASK_VISIBILITY_MS` (default 5 min) must exceed your slowest agent run.** A task still
+  working when its lease expires gets handed to a second worker while the first is still going.
+  Long-running agents need a raised timeout, or lease renewal, which isn't implemented.
+
+Webhook redeliveries are deduplicated by the provider's delivery id (`X-GitHub-Delivery`,
+Stripe's event `id`, or `X-Idempotency-Key` for `generic`), so a provider retrying doesn't run
+the agent a second time. A retry returns `202` with the original task id.
+
 ## Quickstart
 
 ```bash
@@ -43,10 +63,9 @@ curl -s localhost:8000/tasks/1 -H "authorization: Bearer $TOKEN"
 
 Add workers with `docker compose up --scale worker=8`.
 
-> The compose and image definitions have not been built in this environment — no Docker daemon
-> was available. The two processes were verified end to end natively (see "Without Docker"),
-> so the application path is exercised, but treat the first `docker compose up --build` as
-> unproven and report anything that breaks.
+> The image has not been built on a developer machine here — no Docker daemon was available.
+> CI (`.github/workflows/ci.yml`) builds it and runs a task through compose end to end, so the
+> first green run on a PR is what actually proves this path.
 
 ### Without Docker
 
@@ -77,9 +96,9 @@ what it was handed so the pipeline runs end to end before you have an agent runt
 | `POST /orchestrator/scale` | token | Recompute desired worker count from queue depth. Optional body: `tasksPerWorker`, `min`, `max`. |
 | `GET /orchestrator/workers` | token | Desired count, queue depth and per-worker health. |
 | `POST /orchestrator/workers/:id/heartbeat` | token | Worker liveness ping (workers are unhealthy after 30s of silence). |
-| `POST /tasks/next` | token | Worker pulls the next queued task; `204` when the queue is empty. |
-| `POST /tasks/:id/result` | token | Worker reports `{ status, result }` or `{ status, error }`. |
-| `GET /tasks/:id` | token | Task outcome: `running`, `succeeded` or `failed`. `404` only for an unknown id. |
+| `POST /tasks/next` | token | Worker leases the next task; `204` when nothing is waiting. |
+| `POST /tasks/:id/result` | token | Release the lease with `{ status: "succeeded", result }` or `{ status: "failed", error }`. |
+| `GET /tasks/:id` | token | Task state: `queued`, `running`, `succeeded` or `failed`. `404` only for an unknown id. |
 
 ### Worker/control auth
 
@@ -140,11 +159,13 @@ Also outstanding:
   Terraform also has no provider/backend/root module, and expects you to bring your own VPC.
 - **Workers have no AWS permissions.** The task definition sets `execution_role_arn` but no task
   role, so a worker container cannot call SQS or any other AWS API. Blocks the queue swap above.
-- **Tasks are lost on worker crash.** `dequeue()` is destructive with no ack — a worker that dies
-  mid-task drops it silently. SQS visibility timeouts and a DLQ solve this for free.
-- **Webhook retries run twice.** GitHub and Stripe both redeliver; there's no dedupe on delivery ID.
+- **Given-up tasks have nowhere to go.** A task that exhausts its attempts is marked `failed` and
+  that's it — there's no dead-letter queue to inspect or replay from. SQS provides one for free.
 - **`POST /orchestrator/scale` records a number and calls nothing.** Once the queue is SQS, ECS
   Application Auto Scaling target-tracking on `ApproximateNumberOfMessagesVisible` does this
   natively in Terraform, and this endpoint plus `desiredCount()` should be deleted rather than
   finished.
-- Results and the LangChain registry are in-memory and unbounded; they clear on restart.
+- **Long agent runs can double-execute.** No lease renewal, so a task outliving
+  `TASK_VISIBILITY_MS` is handed to a second worker while the first still holds it.
+- Task records, results and the LangChain registry are in-memory and unbounded; they clear on
+  restart, and nothing expires while the process lives.

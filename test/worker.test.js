@@ -68,13 +68,19 @@ test('an n8n workflow runs its steps in dependency order', async () => {
   assert.deepEqual(result.steps.map((s) => s.name), ['A', 'B', 'C']);
 });
 
-test('a failing task reports failure instead of vanishing', async () => {
+test('a failing task is retried, then fails for good once attempts run out', async () => {
   // A task claiming to be n8n with a non-array steps payload blows up in handle().
   const { id } = queue.enqueue('n8n', { steps: 'not-an-array' });
 
   await runOnce();
+  assert.equal(queue.getResult(id).status, 'queued', 'first failure should be retried');
 
+  await runOnce();
+  assert.equal(queue.getResult(id).status, 'queued');
+
+  await runOnce();
   const outcome = queue.getResult(id);
-  assert.equal(outcome.status, 'failed');
-  assert.match(outcome.error, /map is not a function/);
+  assert.equal(outcome.status, 'failed', 'should be terminal after 3 attempts');
+  assert.match(outcome.error, /gave up after 3 attempts/);
+  assert.equal(await runOnce(), null, 'a task that gave up must not be redelivered');
 });

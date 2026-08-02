@@ -27,14 +27,18 @@ function parseCommaSigned(header) {
 
 // Every verify() takes the raw request bytes, never the parsed body: re-serializing
 // JSON reorders keys and drops whitespace, so the digest would never match a real sender.
+// deliveryId is what makes redelivery safe: every one of these providers retries on a non-2xx
+// or a timeout, and without it a retry runs the agent a second time.
 const providers = {
   github: {
     secretEnv: 'GITHUB_WEBHOOK_SECRET',
+    deliveryId: (req) => req.get('x-github-delivery'),
     verify: (secret, req) =>
       safeEqual(req.get('x-hub-signature-256') ?? '', `sha256=${hmacHex(secret, req.rawBody)}`),
   },
   stripe: {
     secretEnv: 'STRIPE_WEBHOOK_SECRET',
+    deliveryId: (req) => req.body?.id,
     verify: (secret, req) => {
       const { t, v1 } = parseCommaSigned(req.get('stripe-signature'));
       if (!t || !v1) return false;
@@ -46,6 +50,7 @@ const providers = {
   },
   generic: {
     secretEnv: 'GENERIC_WEBHOOK_SECRET',
+    deliveryId: (req) => req.get('x-idempotency-key'),
     verify: (secret, req) => safeEqual(req.get('x-signature-256') ?? '', hmacHex(secret, req.rawBody)),
   },
 };
@@ -64,7 +69,10 @@ router.post('/:provider/webhook', (req, res) => {
     return res.status(401).json({ error: 'invalid signature' });
   }
 
-  const task = queue.enqueue(`integrations:${req.params.provider}`, req.body);
+  // No delivery id (the provider omitted it) means no dedupe — enqueue rather than drop.
+  const deliveryId = provider.deliveryId(req);
+  const dedupeKey = deliveryId == null ? undefined : `${req.params.provider}:${deliveryId}`;
+  const task = queue.enqueue(`integrations:${req.params.provider}`, req.body, dedupeKey);
   res.status(202).json({ taskId: task.id });
 });
 
