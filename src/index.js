@@ -47,7 +47,9 @@ app.use('/orchestrator', requireWorkerToken, orchestrator.router);
 // Workers pull from the same queue everything else dispatches into.
 app.post('/tasks/next', requireWorkerToken, (req, res) => {
   const task = queue.dequeue();
-  return task ? res.json(task) : res.status(204).end();
+  if (!task) return res.status(204).end();
+  queue.markRunning(task.id);
+  res.json(task);
 });
 
 app.post('/tasks/:id/result', requireWorkerToken, (req, res) => {
@@ -57,7 +59,7 @@ app.post('/tasks/:id/result', requireWorkerToken, (req, res) => {
 
 app.get('/tasks/:id', requireWorkerToken, (req, res) => {
   const result = queue.getResult(req.params.id);
-  return result ? res.json(result) : res.status(404).json({ error: 'no result for that task' });
+  return result ? res.json(result) : res.status(404).json({ error: 'unknown task' });
 });
 
 // Express's default handler renders an HTML stack trace containing absolute server paths,

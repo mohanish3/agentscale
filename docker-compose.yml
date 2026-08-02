@@ -23,5 +23,3 @@ services:
         condition: service_healthy
     # Scale with `docker compose up --scale worker=4`. Workers scale freely; the API does not
     # yet, because the queue lives in its process (see the queue note in the README).
-    deploy:
-      replicas: 2

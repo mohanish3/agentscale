@@ -28,6 +28,12 @@ function depth() {
 // this forever. Gets a TTL when it moves to the shared store.
 const results = new Map(); // task id -> { status, result?, error?, completedAt }
 
+// Recorded when a task is handed out, so a caller polling for a result can tell "still
+// working" apart from "no such task" — otherwise both look like a 404 and it polls forever.
+function markRunning(id) {
+  results.set(id, { status: 'running', startedAt: new Date().toISOString() });
+}
+
 function recordResult(id, outcome) {
   results.set(id, { ...outcome, completedAt: new Date().toISOString() });
 }
@@ -41,4 +47,4 @@ function clear() {
   results.clear();
 }
 
-module.exports = { enqueue, dequeue, depth, clear, recordResult, getResult };
+module.exports = { enqueue, dequeue, depth, clear, markRunning, recordResult, getResult };

@@ -25,7 +25,7 @@ cp .env.example .env     # set WORKER_TOKEN
 docker compose up --build
 ```
 
-That brings up the API on `:8000` and two workers polling it. Submit a workflow and read the result:
+That brings up the API on `:8000` and a worker polling it. Submit a workflow and read the result:
 
 ```bash
 TOKEN=local-dev-token
@@ -42,6 +42,11 @@ curl -s localhost:8000/tasks/1 -H "authorization: Bearer $TOKEN"
 ```
 
 Add workers with `docker compose up --scale worker=8`.
+
+> The compose and image definitions have not been built in this environment — no Docker daemon
+> was available. The two processes were verified end to end natively (see "Without Docker"),
+> so the application path is exercised, but treat the first `docker compose up --build` as
+> unproven and report anything that breaks.
 
 ### Without Docker
 
@@ -74,7 +79,7 @@ what it was handed so the pipeline runs end to end before you have an agent runt
 | `POST /orchestrator/workers/:id/heartbeat` | token | Worker liveness ping (workers are unhealthy after 30s of silence). |
 | `POST /tasks/next` | token | Worker pulls the next queued task; `204` when the queue is empty. |
 | `POST /tasks/:id/result` | token | Worker reports `{ status, result }` or `{ status, error }`. |
-| `GET /tasks/:id` | token | Read a completed task's outcome; `404` while still queued or running. |
+| `GET /tasks/:id` | token | Task outcome: `running`, `succeeded` or `failed`. `404` only for an unknown id. |
 
 ### Worker/control auth
 

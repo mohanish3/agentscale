@@ -18,6 +18,21 @@ test('an empty queue yields no work', async () => {
   assert.equal(await runOnce(), null);
 });
 
+test('an in-flight task reads as running, and an unknown id 404s', async () => {
+  const { id } = queue.enqueue('test', {});
+  const headers = { authorization: 'Bearer test-worker-token' };
+
+  // Claim the task the way a worker does, but do not report a result yet.
+  await fetch(`${process.env.AGENTSCALE_URL}/tasks/next`, { method: 'POST', headers });
+
+  const running = await fetch(`${process.env.AGENTSCALE_URL}/tasks/${id}`, { headers });
+  assert.equal(running.status, 200);
+  assert.equal((await running.json()).status, 'running');
+
+  const unknown = await fetch(`${process.env.AGENTSCALE_URL}/tasks/nope`, { headers });
+  assert.equal(unknown.status, 404, 'an unknown id must be distinguishable from an in-flight one');
+});
+
 test('a queued task is pulled, run and its result recorded', async () => {
   const { id } = queue.enqueue('integrations:github', { action: 'opened' });
 
