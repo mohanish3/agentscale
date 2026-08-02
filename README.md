@@ -14,21 +14,50 @@ into the same worker pool.
 - **Custom LangChain servers** — register an existing LangChain server as a worker backend (see `src/langchainWorkers/`).
 - **Orchestration API** — scale the worker pool and check worker health (see `src/orchestrator/`).
 
-Everything dispatches into one in-process queue (`src/queue.js`); workers pull from it with
-`POST /tasks/next` and the orchestrator sizes the pool off its depth.
+Two processes: an **API** (`src/index.js`) that receives work, and a **worker** (`src/worker.js`)
+that executes it. Everything dispatches into one queue (`src/queue.js`); workers pull from it
+with `POST /tasks/next`, run the task, and report the outcome to `POST /tasks/:id/result`.
 
 ## Quickstart
 
 ```bash
-npm install
-npm start
+cp .env.example .env     # set WORKER_TOKEN
+docker compose up --build
 ```
 
+That brings up the API on `:8000` and two workers polling it. Submit a workflow and read the result:
+
 ```bash
-curl http://localhost:8000/health
+TOKEN=local-dev-token
+curl -s localhost:8000/n8n/workflows -H "authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' -d '{
+    "name": "demo",
+    "nodes": [{"name": "fetch"}, {"name": "summarize"}],
+    "connections": {"fetch": {"main": [[{"node": "summarize"}]]}}
+  }'
+# {"taskId":"1","steps":["fetch","summarize"]}
+
+curl -s localhost:8000/tasks/1 -H "authorization: Bearer $TOKEN"
+# {"status":"succeeded","result":{...},"completedAt":"..."}
+```
+
+Add workers with `docker compose up --scale worker=8`.
+
+### Without Docker
+
+```bash
+npm install
+WORKER_TOKEN=local-dev-token npm start     # API
+WORKER_TOKEN=local-dev-token npm run worker # worker, in a second shell
 ```
 
 Run tests: `npm test` (Node's built-in test runner, no extra dependencies).
+
+## Writing your agent
+
+`handle(task)` in `src/worker.js` is the plug point. It receives a task and returns the result
+that lands on `GET /tasks/:id`; throwing marks the task failed. The shipped default resolves
+what it was handed so the pipeline runs end to end before you have an agent runtime attached.
 
 ## API
 
@@ -44,6 +73,8 @@ Run tests: `npm test` (Node's built-in test runner, no extra dependencies).
 | `GET /orchestrator/workers` | token | Desired count, queue depth and per-worker health. |
 | `POST /orchestrator/workers/:id/heartbeat` | token | Worker liveness ping (workers are unhealthy after 30s of silence). |
 | `POST /tasks/next` | token | Worker pulls the next queued task; `204` when the queue is empty. |
+| `POST /tasks/:id/result` | token | Worker reports `{ status, result }` or `{ status, error }`. |
+| `GET /tasks/:id` | token | Read a completed task's outcome; `404` while still queued or running. |
 
 ### Worker/control auth
 
@@ -70,23 +101,45 @@ request cannot be replayed indefinitely.
 
 ```
 src/
-  index.js                 Express app entrypoint
+  index.js                 Express API entrypoint
+  worker.js                Worker loop — pulls, executes, reports
   queue.js                 Shared task queue every surface dispatches into
   integrations/            Webhook receivers + native integration connectors
   n8n/                     n8n workflow ingestion
   langchainWorkers/        Custom LangChain server registration + dispatch
   orchestrator/            Worker pool scaling + health API
+Dockerfile                 One image, both roles (worker overrides the command)
+docker-compose.yml         Local API + workers
 infra/aws/                 Terraform for the AWS worker pool
 test/                      Test suite (node --test)
 ```
 
+Configuration is documented in `.env.example`.
+
 ## Status
 
-All modules above are implemented and tested. Two deliberate limits, marked with `ponytail:`
-comments in the source:
+Runs end to end locally: submit work, a worker executes it, read the result back. Known limits,
+in the order they'll bite you.
 
-- The task queue and LangChain server registry are **in-process** — they do not survive a restart
-  or span replicas. Move to SQS and a shared store when workers run outside this process.
-- `POST /orchestrator/scale` computes and records the target worker count but does not call AWS;
-  the Fargate service still takes its `desired_count` from Terraform. Wiring it to ECS
-  `UpdateService` needs `@aws-sdk/client-ecs` and a real pool to scale against.
+**The queue lives in the API process.** Workers scale horizontally — run as many as you like
+against one API — but the **API does not**. Two API replicas means two disjoint queues, and a
+webhook landing on one is invisible to workers polling the other. This is the ceiling on
+everything below, and it makes "scaled by queue depth" true only for a single API instance.
+Fixing it means SQS (or Redis/Postgres), keeping the in-memory queue as the driver that lets
+tests and `docker compose up` run without cloud credentials.
+
+Also outstanding:
+
+- **No deployment for the API.** `infra/aws` provisions the *worker pool* only — there's no
+  load balancer and no service for `src/index.js`, so nothing receives webhooks in AWS yet. The
+  Terraform also has no provider/backend/root module, and expects you to bring your own VPC.
+- **Workers have no AWS permissions.** The task definition sets `execution_role_arn` but no task
+  role, so a worker container cannot call SQS or any other AWS API. Blocks the queue swap above.
+- **Tasks are lost on worker crash.** `dequeue()` is destructive with no ack — a worker that dies
+  mid-task drops it silently. SQS visibility timeouts and a DLQ solve this for free.
+- **Webhook retries run twice.** GitHub and Stripe both redeliver; there's no dedupe on delivery ID.
+- **`POST /orchestrator/scale` records a number and calls nothing.** Once the queue is SQS, ECS
+  Application Auto Scaling target-tracking on `ApproximateNumberOfMessagesVisible` does this
+  natively in Terraform, and this endpoint plus `desiredCount()` should be deleted rather than
+  finished.
+- Results and the LangChain registry are in-memory and unbounded; they clear on restart.

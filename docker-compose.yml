@@ -1,0 +1,27 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      WORKER_TOKEN: ${WORKER_TOKEN:-local-dev-token}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-local-dev-secret}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8000/health').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  worker:
+    build: .
+    command: ["node", "src/worker.js"]
+    environment:
+      AGENTSCALE_URL: http://api:8000
+      WORKER_TOKEN: ${WORKER_TOKEN:-local-dev-token}
+    depends_on:
+      api:
+        condition: service_healthy
+    # Scale with `docker compose up --scale worker=4`. Workers scale freely; the API does not
+    # yet, because the queue lives in its process (see the queue note in the README).
+    deploy:
+      replicas: 2

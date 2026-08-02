@@ -24,8 +24,21 @@ function depth() {
   return tasks.length;
 }
 
-function clear() {
-  tasks.length = 0;
+// ponytail: unbounded and in-process, same as the queue — a long-running deployment grows
+// this forever. Gets a TTL when it moves to the shared store.
+const results = new Map(); // task id -> { status, result?, error?, completedAt }
+
+function recordResult(id, outcome) {
+  results.set(id, { ...outcome, completedAt: new Date().toISOString() });
 }
 
-module.exports = { enqueue, dequeue, depth, clear };
+function getResult(id) {
+  return results.get(id) ?? null;
+}
+
+function clear() {
+  tasks.length = 0;
+  results.clear();
+}
+
+module.exports = { enqueue, dequeue, depth, clear, recordResult, getResult };

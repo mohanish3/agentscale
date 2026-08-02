@@ -9,7 +9,12 @@ const orchestrator = require('./orchestrator');
 const app = express();
 
 // Webhook signatures are computed over the bytes as sent, so keep them before parsing.
-app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf; } }));
+// The default 100kb limit rejects realistic n8n workflow exports (a 200-node export runs
+// ~140kb), which 413s the n8n module on its own use case.
+app.use(express.json({
+  limit: process.env.MAX_BODY_SIZE ?? '5mb',
+  verify: (req, res, buf) => { req.rawBody = buf; },
+}));
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
@@ -43,6 +48,24 @@ app.use('/orchestrator', requireWorkerToken, orchestrator.router);
 app.post('/tasks/next', requireWorkerToken, (req, res) => {
   const task = queue.dequeue();
   return task ? res.json(task) : res.status(204).end();
+});
+
+app.post('/tasks/:id/result', requireWorkerToken, (req, res) => {
+  queue.recordResult(req.params.id, req.body ?? {});
+  res.status(204).end();
+});
+
+app.get('/tasks/:id', requireWorkerToken, (req, res) => {
+  const result = queue.getResult(req.params.id);
+  return result ? res.json(result) : res.status(404).json({ error: 'no result for that task' });
+});
+
+// Express's default handler renders an HTML stack trace containing absolute server paths,
+// so every error — a 413, a malformed JSON body — leaks filesystem layout to the caller.
+app.use((err, req, res, next) => {
+  const status = err.status ?? err.statusCode ?? 500;
+  if (status >= 500) console.error(err);
+  res.status(status).json({ error: status >= 500 ? 'internal error' : err.message });
 });
 
 if (require.main === module) {

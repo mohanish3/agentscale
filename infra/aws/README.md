@@ -15,4 +15,15 @@ module "worker_pool" {
 }
 ```
 
-Root-level environment stacks (e.g. `envs/prod`) are added as the deployment story grows.
+`image` is built from the `Dockerfile` at the repo root, run with the worker command:
+
+```dockerfile
+CMD ["node", "src/worker.js"]
+```
+
+The worker needs `AGENTSCALE_URL` and `WORKER_TOKEN` in its task definition environment.
+
+Still missing before this is deployable: a provider/region/backend block, a root module, a
+service and load balancer for the API itself (this module provisions workers only), and a task
+role — the task definition sets `execution_role_arn` only, so the worker container has no AWS
+permissions of its own. Root-level environment stacks (e.g. `envs/prod`) come with those.
