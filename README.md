@@ -36,7 +36,13 @@ Two consequences worth designing around:
 
 Webhook redeliveries are deduplicated by the provider's delivery id (`X-GitHub-Delivery`,
 Stripe's event `id`, or `X-Idempotency-Key` for `generic`), so a provider retrying doesn't run
-the agent a second time. A retry returns `202` with the original task id.
+the agent a second time. A retry returns `202` with the original task id — which may name a task
+that has already succeeded, or one that exhausted its attempts and failed. The delivery is
+treated as handled either way; check `GET /tasks/:id` rather than assuming `202` means running.
+
+Reports carry the `leaseToken` handed out with the task. A worker whose lease expired mid-run
+gets `409` when it finally reports, and its result is discarded rather than overwriting the
+worker that took the task over.
 
 ## Quickstart
 

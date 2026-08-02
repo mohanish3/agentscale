@@ -8,6 +8,8 @@
 //
 // ponytail: in-process, so it dies with the process and does not span replicas.
 // Swap for SQS when workers run outside this process — see the README status section.
+const crypto = require('node:crypto');
+
 const DEFAULT_VISIBILITY_MS = 300_000;
 const DEFAULT_MAX_ATTEMPTS = 3;
 
@@ -45,9 +47,19 @@ function lease() {
   if (!task) return null;
   const attempt = (attempts.get(task.id) ?? 0) + 1;
   attempts.set(task.id, attempt);
-  inFlight.set(task.id, { task, leaseExpiresAt: Date.now() + visibilityMs() });
+  // A slow worker can still be running after its lease expired and the task was handed to
+  // someone else. The token identifies which lease a report belongs to, so the straggler's
+  // late result cannot retire or overwrite the lease now held by another worker.
+  const leaseToken = crypto.randomUUID();
+  inFlight.set(task.id, { task, leaseToken, leaseExpiresAt: Date.now() + visibilityMs() });
   results.set(task.id, { status: 'running', attempt, startedAt: stamp() });
-  return task;
+  return { ...task, leaseToken };
+}
+
+// False means the report came from a lease that is no longer current — the caller was
+// superseded and its result is discarded rather than applied to someone else's work.
+function holdsLease(id, leaseToken) {
+  return inFlight.get(id)?.leaseToken === leaseToken;
 }
 
 // Returns tasks whose worker never reported back. Called on every lease rather than from a
@@ -75,18 +87,21 @@ function retryOrFail(id, task, reason) {
   results.set(id, { status: 'queued', requeuedAt: stamp() });
 }
 
-function ack(id, outcome) {
+function ack(id, outcome, leaseToken) {
+  if (!holdsLease(id, leaseToken)) return false;
   inFlight.delete(id);
   results.set(id, { ...outcome, completedAt: stamp() });
+  return true;
 }
 
 // A reported failure is retried like a lost lease — a flaky agent run should not be terminal
 // until it has used its attempts.
-function nack(id, error) {
+function nack(id, error, leaseToken) {
   const held = inFlight.get(id);
-  if (!held) return;
+  if (!holdsLease(id, leaseToken)) return false;
   inFlight.delete(id);
   retryOrFail(id, held.task, error ?? 'task failed');
+  return true;
 }
 
 // Visible work only, matching what an autoscaler should react to (SQS's

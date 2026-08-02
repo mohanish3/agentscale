@@ -53,9 +53,14 @@ app.post('/tasks/next', requireWorkerToken, (req, res) => {
 // Reporting an outcome is what releases the lease. A failure is requeued until the task runs
 // out of attempts, so a flaky agent run is not terminal on the first try.
 app.post('/tasks/:id/result', requireWorkerToken, (req, res) => {
-  const { status, result, error } = req.body ?? {};
-  if (status === 'succeeded') queue.ack(req.params.id, { status, result });
-  else queue.nack(req.params.id, error);
+  const { status, result, error, leaseToken } = req.body ?? {};
+  const applied = status === 'succeeded'
+    ? queue.ack(req.params.id, { status, result }, leaseToken)
+    : queue.nack(req.params.id, error, leaseToken);
+
+  // The lease moved on while this worker was still running — its result is stale, and saying
+  // so is what makes double-execution visible rather than silent.
+  if (!applied) return res.status(409).json({ error: 'lease is no longer held' });
   res.status(204).end();
 });
 

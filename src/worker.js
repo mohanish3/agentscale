@@ -42,13 +42,27 @@ async function handle(task) {
 async function runOnce() {
   const task = await call('/tasks/next');
   if (!task) return null;
+  // Echoed back so the API can tell this report apart from one by a worker that took the task
+  // over after this lease expired. A 409 means exactly that, and is not worth retrying.
+  const { leaseToken } = task;
+  const report = async (body) => {
+    try {
+      await call(`/tasks/${task.id}/result`, { body: { ...body, leaseToken } });
+    } catch (err) {
+      if (!/409/.test(err.message)) throw err;
+      console.error(`task ${task.id}: lease expired mid-run, result discarded`);
+    }
+  };
+
+  // Run first, then report — so a reporting failure is never mistaken for a task failure.
+  let outcome;
   try {
-    const result = await handle(task);
-    await call(`/tasks/${task.id}/result`, { body: { status: 'succeeded', result } });
+    outcome = { status: 'succeeded', result: await handle(task) };
   } catch (err) {
     // A failed task must still report, otherwise the caller waits on a result that never lands.
-    await call(`/tasks/${task.id}/result`, { body: { status: 'failed', error: err.message } });
+    outcome = { status: 'failed', error: err.message };
   }
+  await report(outcome);
   return task;
 }
 
