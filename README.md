@@ -63,9 +63,8 @@ curl -s localhost:8000/tasks/1 -H "authorization: Bearer $TOKEN"
 
 Add workers with `docker compose up --scale worker=8`.
 
-> The image has not been built on a developer machine here — no Docker daemon was available.
-> CI (`.github/workflows/ci.yml`) builds it and runs a task through compose end to end, so the
-> first green run on a PR is what actually proves this path.
+CI (`.github/workflows/ci.yml`) builds the image and drives a task through compose end to end on
+every PR, so this path stays proven rather than assumed.
 
 ### Without Docker
 
