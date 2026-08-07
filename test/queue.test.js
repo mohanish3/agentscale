@@ -111,3 +111,46 @@ test('tasks without a dedupe key are always distinct', () => {
   assert.notEqual(a.id, b.id);
   assert.equal(queue.depth(), 2);
 });
+
+test('a task that gives up is dead-lettered, not just marked failed', () => {
+  const { id } = queue.enqueue('test', { poison: true });
+  const wayLater = () => Date.now() + 10 * 60_000;
+
+  for (let i = 0; i < 3; i++) {
+    queue.lease();
+    queue.sweepExpired(wayLater());
+  }
+
+  const entries = queue.deadLettered();
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].task.id, id);
+  assert.equal(entries[0].attempts, 3);
+});
+
+test('replaying a dead-lettered task puts it back with a clean attempt count', () => {
+  const { id } = queue.enqueue('test', { poison: true });
+  const wayLater = () => Date.now() + 10 * 60_000;
+
+  for (let i = 0; i < 3; i++) {
+    queue.lease();
+    queue.sweepExpired(wayLater());
+  }
+
+  assert.equal(queue.replay(id), true);
+  assert.equal(queue.deadLettered().length, 0);
+  assert.equal(queue.depth(), 1);
+  assert.equal(queue.getResult(id).status, 'queued');
+
+  // A clean attempt count means it survives another full round of failures before
+  // being dead-lettered again, not immediately on its next lease.
+  queue.lease();
+  queue.sweepExpired(wayLater());
+  assert.equal(queue.getResult(id).status, 'queued');
+  assert.equal(queue.deadLettered().length, 0);
+});
+
+test('replaying a task that is not dead-lettered does nothing', () => {
+  const { id } = queue.enqueue('test', {});
+  assert.equal(queue.replay(id), false);
+  assert.equal(queue.replay('no-such-id'), false);
+});

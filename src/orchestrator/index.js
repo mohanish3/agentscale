@@ -39,9 +39,11 @@ router.get('/workers', (req, res) => {
   res.json({ desired, queueDepth: queue.depth(), workers: workerHealth() });
 });
 
-// ponytail: computes and records the target count only — the Fargate service still
-// reads its own desired_count from Terraform. Wire this to ECS UpdateService
-// (@aws-sdk/client-ecs) once a real pool exists to scale against.
+// ponytail: computes and records a target count only, never calls AWS. The Fargate service
+// does scale now, but off a CPU target-tracking policy in Terraform (infra/aws), not off this
+// number — queue depth isn't a metric ECS Application Auto Scaling can read natively. Wiring
+// this endpoint to ECS UpdateService (@aws-sdk/client-ecs) would make queue depth the scaling
+// signal instead of CPU, but needs a real cluster and credentials to verify against first.
 router.post('/scale', (req, res) => {
   try {
     desired = desiredCount(queue.depth(), req.body ?? {});

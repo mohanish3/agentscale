@@ -8,7 +8,7 @@ into the same worker pool.
 
 ## What it does
 
-- **On-demand AWS worker pools** — ECS Fargate-backed agent workers, scaled by queue depth (see `infra/aws/`).
+- **On-demand AWS worker pools** — ECS Fargate-backed agent workers, autoscaled on CPU utilization (see `infra/aws/`).
 - **Native integrations** — inbound webhooks with per-provider signature verification (see `src/integrations/`).
 - **n8n workflow ingestion** — accepts n8n workflow JSON exports and runs them as agent task graphs (see `src/n8n/`).
 - **Custom LangChain servers** — register an existing LangChain server as a worker backend (see `src/langchainWorkers/`).
@@ -23,8 +23,9 @@ with `POST /tasks/next`, run the task, and report the outcome to `POST /tasks/:i
 Tasks are delivered **at least once**. A worker leases a task rather than removing it, and the
 lease expires unless the worker reports back — so a worker that crashes mid-task doesn't take
 the task with it. A reported failure is retried the same way. After `TASK_MAX_ATTEMPTS`
-deliveries (default 3) a task is given up on and marked `failed`, so one poison task can't cycle
-forever.
+deliveries (default 3) a task is given up on, marked `failed`, and dead-lettered — so one poison
+task can't cycle forever, and `GET /tasks/dead-letter` / `POST /tasks/:id/replay` are how you
+look at it and put it back once whatever it was tripping over is fixed.
 
 Two consequences worth designing around:
 
@@ -104,13 +105,16 @@ what it was handed so the pipeline runs end to end before you have an agent runt
 | `POST /tasks/next` | token | Worker leases the next task; `204` when nothing is waiting. |
 | `POST /tasks/:id/result` | token | Release the lease with `{ status: "succeeded", result }` or `{ status: "failed", error }`. |
 | `GET /tasks/:id` | token | Task state: `queued`, `running`, `succeeded` or `failed`. `404` only for an unknown id. |
+| `GET /tasks/dead-letter` | token | Tasks that exhausted `TASK_MAX_ATTEMPTS`, for inspection. In-process, like the queue — gone on restart. |
+| `POST /tasks/:id/replay` | token | Re-queue a dead-lettered task with a clean attempt count. `404` if it isn't dead-lettered. |
 
 ### Worker/control auth
 
 Everything marked `token` above requires `Authorization: Bearer $WORKER_TOKEN` — draining the
 queue exposes every task payload, and registering a LangChain server decides where task input
-gets sent. As with the webhook secrets, an unset `WORKER_TOKEN` **refuses** (`503`) rather than
-serving these open.
+gets sent. `WORKER_TOKEN` accepts a comma-separated list, so callers can hold distinct tokens
+instead of one secret shared across the whole pool. As with the webhook secrets, an unset
+`WORKER_TOKEN` **refuses** (`503`) rather than serving these open.
 
 ### Webhook secrets
 
@@ -162,15 +166,14 @@ Also outstanding:
 - **No deployment for the API.** `infra/aws` provisions the *worker pool* only — there's no
   load balancer and no service for `src/index.js`, so nothing receives webhooks in AWS yet. The
   Terraform also has no provider/backend/root module, and expects you to bring your own VPC.
-- **Workers have no AWS permissions.** The task definition sets `execution_role_arn` but no task
-  role, so a worker container cannot call SQS or any other AWS API. Blocks the queue swap above.
-- **Given-up tasks have nowhere to go.** A task that exhausts its attempts is marked `failed` and
-  that's it — there's no dead-letter queue to inspect or replay from. SQS provides one for free.
-- **`POST /orchestrator/scale` records a number and calls nothing.** Once the queue is SQS, ECS
-  Application Auto Scaling target-tracking on `ApproximateNumberOfMessagesVisible` does this
-  natively in Terraform, and this endpoint plus `desiredCount()` should be deleted rather than
-  finished.
+- **`POST /orchestrator/scale` records a number and calls nothing.** The worker pool does scale
+  now — `infra/aws` wires an ECS Application Auto Scaling target-tracking policy on the
+  service — but it tracks CPU utilization, not queue depth, because queue depth lives in this
+  process rather than a CloudWatch metric ECS can read. This endpoint is still informational
+  only until the queue itself moves out of process.
 - **Long agent runs can double-execute.** No lease renewal, so a task outliving
   `TASK_VISIBILITY_MS` is handed to a second worker while the first still holds it.
 - Task records, results and the LangChain registry are in-memory and unbounded; they clear on
-  restart, and nothing expires while the process lives.
+  restart, and nothing expires while the process lives. Dead-lettered tasks (`GET
+  /tasks/dead-letter`) are inspectable and replayable, but the same restart caveat applies —
+  they're not a durable DLQ until the queue is.

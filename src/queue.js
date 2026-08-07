@@ -22,6 +22,7 @@ const attempts = new Map(); // id -> delivery count, survives redelivery
 const results = new Map(); // id -> { status, ... }
 const tasksById = new Map(); // every task ever accepted, so a dedupe hit resolves after completion
 const byDedupeKey = new Map(); // dedupe key -> task id
+const deadLetter = new Map(); // id -> { task, error, attempts, failedAt } for gave-up tasks
 let nextId = 1;
 
 const stamp = () => new Date().toISOString();
@@ -74,17 +75,34 @@ function sweepExpired(now = Date.now()) {
 
 function retryOrFail(id, task, reason) {
   if ((attempts.get(id) ?? 0) >= maxAttempts()) {
-    // ponytail: terminal state only — no dead-letter queue to inspect or replay from.
-    // SQS gives a real DLQ for free when the queue moves.
-    results.set(id, {
-      status: 'failed',
-      error: `${reason}; gave up after ${attempts.get(id)} attempts`,
-      completedAt: stamp(),
-    });
+    const error = `${reason}; gave up after ${attempts.get(id)} attempts`;
+    results.set(id, { status: 'failed', error, completedAt: stamp() });
+    // ponytail: in-process, like the rest of this file — a dead-lettered task is inspectable
+    // and replayable within a process lifetime, but does not survive a restart. SQS gives a
+    // durable DLQ for free once the queue itself moves (see WAYFINDER.md).
+    deadLetter.set(id, { task, error, attempts: attempts.get(id), failedAt: stamp() });
     return;
   }
   pending.push(task);
   results.set(id, { status: 'queued', requeuedAt: stamp() });
+}
+
+// Gave-up tasks, for an operator to inspect before deciding whether to replay them.
+function deadLettered() {
+  return [...deadLetter.values()];
+}
+
+// Puts a dead-lettered task back on the queue with a clean attempt count, as if freshly
+// enqueued. Not available for a task that is still pending, in flight, or already succeeded —
+// only one that actually exhausted its attempts.
+function replay(id) {
+  const entry = deadLetter.get(id);
+  if (!entry) return false;
+  deadLetter.delete(id);
+  attempts.set(id, 0);
+  pending.push(entry.task);
+  results.set(id, { status: 'queued', requeuedAt: stamp() });
+  return true;
 }
 
 function ack(id, outcome, leaseToken) {
@@ -122,6 +140,9 @@ function clear() {
   results.clear();
   tasksById.clear();
   byDedupeKey.clear();
+  deadLetter.clear();
 }
 
-module.exports = { enqueue, lease, ack, nack, depth, getResult, clear, sweepExpired };
+module.exports = {
+  enqueue, lease, ack, nack, depth, getResult, clear, sweepExpired, deadLettered, replay,
+};

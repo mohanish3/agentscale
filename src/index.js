@@ -24,15 +24,19 @@ app.get('/health', (req, res) => {
 // draining the queue reads every task payload, and registering a LangChain server
 // picks where task input gets POSTed. An unset token refuses, same as a missing
 // webhook secret — it is never a reason to serve these open.
-// ponytail: one shared secret for the whole worker/control surface; issue per-worker
-// credentials when the pool spans accounts or tenants.
+// WORKER_TOKEN is comma-separated, so a caller can be revoked individually rather than
+// rotating one secret for the whole pool. Each candidate still gets its own timing-safe
+// compare rather than a joined-string search, so token B's bytes can't be inferred from
+// how far a match against token A got.
 function requireWorkerToken(req, res, next) {
-  const expected = process.env.WORKER_TOKEN;
-  if (!expected) return res.status(503).json({ error: 'WORKER_TOKEN is not configured' });
-  const got = (req.get('authorization') ?? '').replace(/^Bearer /, '');
-  if (got.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(got), Buffer.from(expected))) {
-    return res.status(401).json({ error: 'unauthorized' });
-  }
+  const tokens = (process.env.WORKER_TOKEN ?? '').split(',').map((t) => t.trim()).filter(Boolean);
+  if (tokens.length === 0) return res.status(503).json({ error: 'WORKER_TOKEN is not configured' });
+  const got = Buffer.from((req.get('authorization') ?? '').replace(/^Bearer /, ''));
+  const authorized = tokens.some((token) => {
+    const expected = Buffer.from(token);
+    return got.length === expected.length && crypto.timingSafeEqual(got, expected);
+  });
+  if (!authorized) return res.status(401).json({ error: 'unauthorized' });
   next();
 }
 
@@ -64,9 +68,23 @@ app.post('/tasks/:id/result', requireWorkerToken, (req, res) => {
   res.status(204).end();
 });
 
+// Tasks that exhausted TASK_MAX_ATTEMPTS, for an operator to look at before deciding what to
+// do with them. In-process like the rest of the queue — gone on restart, not a durable DLQ.
+// Must stay ahead of GET /tasks/:id, which would otherwise treat "dead-letter" as an id.
+app.get('/tasks/dead-letter', requireWorkerToken, (req, res) => {
+  res.json(queue.deadLettered());
+});
+
 app.get('/tasks/:id', requireWorkerToken, (req, res) => {
   const result = queue.getResult(req.params.id);
   return result ? res.json(result) : res.status(404).json({ error: 'unknown task' });
+});
+
+// Puts a dead-lettered task back on the queue with a clean attempt count.
+app.post('/tasks/:id/replay', requireWorkerToken, (req, res) => {
+  return queue.replay(req.params.id)
+    ? res.status(204).end()
+    : res.status(404).json({ error: 'not dead-lettered' });
 });
 
 // Express's default handler renders an HTML stack trace containing absolute server paths,
