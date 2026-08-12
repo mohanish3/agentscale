@@ -8,3 +8,4 @@ __pycache__/
 *.tfstate.*
 .DS_Store
 WAYFINDER.md
+HANDOFF.md

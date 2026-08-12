@@ -33,6 +33,29 @@ test('an in-flight task reads as running, and an unknown id 404s', async () => {
   assert.equal(unknown.status, 404, 'an unknown id must be distinguishable from an in-flight one');
 });
 
+// Also proves the route is reachable at all — a literal segment under /tasks/ is exactly what
+// /tasks/:id has swallowed before.
+test('a worker can renew its lease over HTTP, and a stale token is refused', async () => {
+  const { id } = queue.enqueue('test', { slow: true });
+  const headers = { authorization: 'Bearer test-worker-token', 'content-type': 'application/json' };
+  const url = `${process.env.AGENTSCALE_URL}/tasks/${id}/renew`;
+
+  const leased = await (await fetch(`${process.env.AGENTSCALE_URL}/tasks/next`, {
+    method: 'POST', headers,
+  })).json();
+  assert.ok(leased.leaseMs > 0, 'the worker derives its renew interval from this');
+
+  const renewed = await fetch(url, {
+    method: 'POST', headers, body: JSON.stringify({ leaseToken: leased.leaseToken }),
+  });
+  assert.equal(renewed.status, 204);
+
+  const stale = await fetch(url, {
+    method: 'POST', headers, body: JSON.stringify({ leaseToken: 'not-the-current-lease' }),
+  });
+  assert.equal(stale.status, 409, 'a worker that lost the task must be told, not silently allowed');
+});
+
 test('a queued task is pulled, run and its result recorded', async () => {
   const { id } = queue.enqueue('integrations:github', { action: 'opened' });
 

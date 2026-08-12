@@ -3,6 +3,9 @@ const queue = require('../queue');
 
 const DEFAULTS = { tasksPerWorker: 5, min: 0, max: 50 };
 const HEARTBEAT_TTL_MS = 30_000;
+// Worker ids default to `worker-${pid}`, so every scale-in left a permanently unhealthy entry
+// here that nothing ever removed. Stay visible long enough to be noticed, then drop.
+const WORKER_EVICT_MS = HEARTBEAT_TTL_MS * 10;
 
 const workers = new Map(); // id -> last heartbeat (ms epoch)
 let desired = DEFAULTS.min;
@@ -20,6 +23,9 @@ function desiredCount(depth, opts = {}) {
 }
 
 function workerHealth(now = Date.now()) {
+  for (const [id, lastSeen] of workers) {
+    if (now - lastSeen >= WORKER_EVICT_MS) workers.delete(id);
+  }
   return [...workers].map(([id, lastSeen]) => ({
     id,
     lastSeen: new Date(lastSeen).toISOString(),
@@ -30,7 +36,11 @@ function workerHealth(now = Date.now()) {
 const router = express.Router();
 
 // Workers call this on a timer; anything past HEARTBEAT_TTL_MS reads as unhealthy.
+// Evict on the write path too, not only in workerHealth() — otherwise a pool that scales in and
+// out while nobody polls GET /orchestrator/workers keeps growing, which is the exact failure
+// this eviction exists to stop.
 router.post('/workers/:id/heartbeat', (req, res) => {
+  workerHealth();
   workers.set(req.params.id, Date.now());
   res.json({ ok: true });
 });
@@ -53,4 +63,4 @@ router.post('/scale', (req, res) => {
   res.json({ desired, queueDepth: queue.depth() });
 });
 
-module.exports = { router, desiredCount, workerHealth, HEARTBEAT_TTL_MS };
+module.exports = { router, desiredCount, workerHealth, HEARTBEAT_TTL_MS, WORKER_EVICT_MS };

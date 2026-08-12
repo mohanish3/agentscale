@@ -68,6 +68,15 @@ app.post('/tasks/:id/result', requireWorkerToken, (req, res) => {
   res.status(204).end();
 });
 
+// A worker still running keeps its lease alive rather than having the task handed to someone
+// else mid-run. 409 means the lease is gone for good — either superseded, or held past
+// TASK_MAX_LEASE_MS — and the worker should stop rather than keep working on someone else's task.
+app.post('/tasks/:id/renew', requireWorkerToken, (req, res) => {
+  return queue.renew(req.params.id, req.body?.leaseToken)
+    ? res.status(204).end()
+    : res.status(409).json({ error: 'lease is no longer held' });
+});
+
 // Tasks that exhausted TASK_MAX_ATTEMPTS, for an operator to look at before deciding what to
 // do with them. In-process like the rest of the queue — gone on restart, not a durable DLQ.
 // Must stay ahead of GET /tasks/:id, which would otherwise treat "dead-letter" as an id.
@@ -97,7 +106,20 @@ app.use((err, req, res, next) => {
 
 if (require.main === module) {
   const port = process.env.PORT || 8000;
-  app.listen(port, () => console.log(`agentscale listening on ${port}`));
+  const server = app.listen(port, () => console.log(`agentscale listening on ${port}`));
+
+  // The worker drains on SIGTERM; this side did not, so `compose down` and ECS scale-in cut
+  // in-flight requests off mid-response and waited out the kill timeout on idle keep-alive
+  // sockets (workers hold one open between polls).
+  // ponytail: this closes the listener, it does not make the queue durable — whatever is still
+  // queued or leased dies with the process either way, because the queue is in-process. That
+  // gap is the SQS item in WAYFINDER.md, not something a signal handler can close.
+  for (const signal of ['SIGTERM', 'SIGINT']) {
+    process.on(signal, () => {
+      server.close(() => process.exit(0));
+      server.closeIdleConnections();
+    });
+  }
 }
 
 module.exports = app;

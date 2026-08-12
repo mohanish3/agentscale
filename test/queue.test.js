@@ -154,3 +154,73 @@ test('replaying a task that is not dead-lettered does nothing', () => {
   assert.equal(queue.replay(id), false);
   assert.equal(queue.replay('no-such-id'), false);
 });
+
+test('a renewed lease outlives the visibility window', () => {
+  const { id } = queue.enqueue('test', { slow: true });
+  const { leaseToken, leaseMs } = queue.lease();
+  assert.ok(leaseMs > 0, 'the worker needs a duration to derive its renew interval from');
+
+  // Long past the point the task would otherwise have been handed to a second worker.
+  const stillWorking = Date.now() + 10 * 60_000;
+  assert.equal(queue.renew(id, leaseToken, stillWorking), true);
+  queue.sweepExpired(stillWorking + 1);
+
+  assert.equal(queue.depth(), 0, 'a renewed task must not be redelivered');
+  assert.equal(queue.getResult(id).status, 'running');
+});
+
+test('a superseded worker cannot renew a lease it already lost', () => {
+  const { id } = queue.enqueue('test', {});
+  const slow = queue.lease();
+  queue.sweepExpired(Date.now() + 10 * 60_000);
+  queue.lease(); // someone else picked it up
+
+  assert.equal(queue.renew(id, slow.leaseToken), false);
+});
+
+// Otherwise a worker wedged on a call that never returns renews forever and the task is never
+// redelivered — a silent stall, worse than the double-execution the visibility timeout accepts.
+test('renewal stops at the cap so a wedged worker cannot hold a task forever', () => {
+  process.env.TASK_MAX_LEASE_MS = '60000';
+  try {
+    const { id } = queue.enqueue('test', { wedged: true });
+    const { leaseToken } = queue.lease();
+
+    assert.equal(queue.renew(id, leaseToken, Date.now() + 30_000), true, 'inside the cap');
+    assert.equal(queue.renew(id, leaseToken, Date.now() + 60_001), false, 'past the cap');
+
+    queue.sweepExpired(Date.now() + 10 * 60_000);
+    assert.equal(queue.depth(), 1, 'and the task comes back for someone else');
+  } finally {
+    delete process.env.TASK_MAX_LEASE_MS;
+  }
+});
+
+// Without this the API leaks one entry per task across five maps for the life of the process.
+const pastRetention = () => Date.now() + 25 * 60 * 60_000;
+
+test('finished tasks age out instead of accumulating for the life of the process', () => {
+  const first = queue.enqueue('integrations:github', {}, 'github:delivery-abc');
+  const { leaseToken } = queue.lease();
+  queue.ack(first.id, { status: 'succeeded', result: {} }, leaseToken);
+
+  queue.sweepRetired(pastRetention());
+
+  assert.equal(queue.getResult(first.id), null, 'the completed record should be gone');
+  // The dedupe key has to go with it, or byDedupeKey keeps one string per webhook forever.
+  // The cost is that a redelivery this late runs the agent again — hence a window (24h) longer
+  // than any sender's retry schedule.
+  assert.notEqual(queue.enqueue('integrations:github', {}, 'github:delivery-abc').id, first.id);
+});
+
+test('retention only takes finished tasks, never live work', () => {
+  const inFlight = queue.enqueue('test', {});
+  queue.lease();
+  const waiting = queue.enqueue('test', {});
+
+  queue.sweepRetired(pastRetention());
+
+  assert.equal(queue.getResult(inFlight.id).status, 'running', 'a leased task is not finished');
+  assert.equal(queue.getResult(waiting.id).status, 'queued');
+  assert.equal(queue.depth(), 1, 'and the queued task is still deliverable');
+});

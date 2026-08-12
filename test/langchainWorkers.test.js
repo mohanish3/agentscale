@@ -8,6 +8,24 @@ test('rejects a non-http url', () => {
   assert.throws(() => register({ name: 'x', url: 'not a url' }), /valid URL/);
 });
 
+// dispatch() returns the upstream body to the caller, so registering the metadata endpoint
+// turns an authenticated call into an AWS credential read on Fargate.
+test('refuses to register a link-local host', () => {
+  assert.throws(() => register({ name: 'imds', url: 'http://169.254.169.254/latest/meta-data/' }), /not allowed/);
+  assert.throws(() => register({ name: 'ecs', url: 'http://169.254.170.2/v2/credentials' }), /not allowed/);
+  assert.throws(() => register({ name: 'v6', url: 'http://[fd00:ec2::254]/' }), /not allowed/);
+});
+
+test('an explicit allowlist replaces the default block', () => {
+  process.env.LANGCHAIN_ALLOWED_HOSTS = 'chains.internal, other.internal';
+  try {
+    assert.equal(register({ name: 'ok', url: 'http://chains.internal/' }).name, 'ok');
+    assert.throws(() => register({ name: 'no', url: 'http://elsewhere.internal/' }), /not allowed/);
+  } finally {
+    delete process.env.LANGCHAIN_ALLOWED_HOSTS;
+  }
+});
+
 test('dispatches to the registered server and returns its output', async () => {
   let seen;
   const upstream = http.createServer((req, res) => {

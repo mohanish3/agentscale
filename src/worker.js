@@ -2,6 +2,9 @@
 // This is what the Fargate task definition's container image is meant to run.
 const IDLE_MS = Number(process.env.WORKER_IDLE_MS ?? 1000);
 const HEARTBEAT_MS = 10_000;
+// Only used if the API hands out a task without a usable leaseMs; matches the queue's default
+// TASK_VISIBILITY_MS so the two don't drift apart silently.
+const DEFAULT_LEASE_MS = 300_000;
 
 // Read at call time rather than module load so tests can point at an ephemeral port.
 const config = () => ({
@@ -44,7 +47,23 @@ async function runOnce() {
   if (!task) return null;
   // Echoed back so the API can tell this report apart from one by a worker that took the task
   // over after this lease expired. A 409 means exactly that, and is not worth retrying.
-  const { leaseToken } = task;
+  const { leaseToken, leaseMs } = task;
+
+  // Hold the lease open for as long as the agent runs, instead of letting a slow task get
+  // redelivered underneath us. Renew at half the lease the API handed out, so a single lost
+  // renewal isn't fatal, and there's no second timeout to keep in sync with the API's.
+  // Guarded because setInterval(NaN) fires flat out.
+  const renewEveryMs = Math.max(1000, Math.floor((Number(leaseMs) || DEFAULT_LEASE_MS) / 2));
+  const renewTimer = setInterval(() => {
+    // Nothing in here may reject: an unhandled rejection inside a timer callback takes the whole
+    // worker down. A renewal losing the race with the final report is a 409 and expected, not
+    // a reason to die.
+    call(`/tasks/${task.id}/renew`, { body: { leaseToken } })
+      .catch((err) => console.error(`task ${task.id}: renew failed: ${err.message}`));
+  }, renewEveryMs);
+  // A pending timer keeps node alive; this one must never be why a worker won't exit.
+  renewTimer.unref?.();
+
   const report = async (body) => {
     try {
       await call(`/tasks/${task.id}/result`, { body: { ...body, leaseToken } });
@@ -61,6 +80,10 @@ async function runOnce() {
   } catch (err) {
     // A failed task must still report, otherwise the caller waits on a result that never lands.
     outcome = { status: 'failed', error: err.message };
+  } finally {
+    // Before reporting, so a renewal can't land after the ack — and in a finally so runOnce()
+    // never leaves a live timer behind, however handle() ended.
+    clearInterval(renewTimer);
   }
   await report(outcome);
   return task;
