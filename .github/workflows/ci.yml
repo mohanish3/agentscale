@@ -1,0 +1,48 @@
+﻿name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  # The compose path cannot be verified on a dev machine without a Docker daemon,
+  # so CI is where the image is actually proven to build.
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: docker compose build
+      - name: Run a task end to end through compose
+        run: |
+          docker compose up -d
+          for i in $(seq 1 30); do
+            curl -sf localhost:8000/health && break || sleep 1
+          done
+          TASK=$(curl -sf localhost:8000/n8n/workflows \
+            -H 'authorization: Bearer local-dev-token' \
+            -H 'content-type: application/json' \
+            -d '{"name":"ci","nodes":[{"name":"a"},{"name":"b"}],"connections":{"a":{"main":[[{"node":"b"}]]}}}' \
+            | sed -n 's/.*"taskId":"\([^"]*\)".*/\1/p')
+          for i in $(seq 1 30); do
+            STATUS=$(curl -sf localhost:8000/tasks/$TASK -H 'authorization: Bearer local-dev-token' \
+              | sed -n 's/.*"status":"\([^"]*\)".*/\1/p')
+            [ "$STATUS" = "succeeded" ] && exit 0
+            sleep 1
+          done
+          echo "task did not succeed; last status: $STATUS"
+          docker compose logs
+          exit 1
+      - if: always()
+        run: docker compose down

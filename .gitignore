@@ -7,3 +7,5 @@ __pycache__/
 *.tfstate
 *.tfstate.*
 .DS_Store
+WAYFINDER.md
+HANDOFF.md
