@@ -6,7 +6,19 @@ tracking CPU utilization — `desired_count` only sets the starting size.
 
 ## Usage
 
+The module pins `hashicorp/aws ~> 6.0` (see `modules/worker_pool/versions.tf`) — it reads
+`data.aws_region.current.region`, which is v6-only. A root module wrapping it configures the
+provider itself:
+
 ```hcl
+provider "aws" {
+  region = "us-east-1"
+}
+
+resource "aws_secretsmanager_secret" "worker_token" {
+  name = "agentscale/worker-token"
+}
+
 module "worker_pool" {
   source                  = "./modules/worker_pool"
   image                   = "<account>.dkr.ecr.<region>.amazonaws.com/agentscale-worker:latest"
@@ -20,6 +32,11 @@ module "worker_pool" {
 }
 ```
 
+That covers every variable without a default (`image`, `subnet_ids`, `security_group_ids`,
+`agentscale_url`, `worker_token_secret_arn`); the rest fall back to the defaults in
+`variables.tf`. Put the secret's *value* in place out of band — Terraform managing it would
+write the token to state.
+
 `image` is built from the `Dockerfile` at the repo root. The module overrides its default
 `CMD ["node", "src/index.js"]` with `["node", "src/worker.js"]` on the task definition, and sets
 `AGENTSCALE_URL` in the container environment — the same two things `docker-compose.yml`'s
@@ -31,8 +48,8 @@ the execution role.
 
 Scaling reacts to CPU, not queue depth — the queue lives in the API process, not a CloudWatch
 metric, so ECS Application Auto Scaling can't read it directly. `POST /orchestrator/scale`
-(`src/orchestrator/`) still only computes a target count and doesn't call AWS; see
-`WAYFINDER.md` for what queue-depth-driven scaling needs first.
+(`src/orchestrator/`) still only computes a target count and doesn't call AWS; the repo
+README's status section covers what queue-depth-driven scaling needs first.
 
 Still missing before this is deployable: a provider/region/backend block, a root module, and a
 service and load balancer for the API itself (this module provisions workers only). Root-level

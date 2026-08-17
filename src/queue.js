@@ -137,7 +137,7 @@ function retryOrFail(id, task, reason) {
     results.set(id, { status: 'failed', error, completedAt: stamp() });
     // ponytail: in-process, like the rest of this file — a dead-lettered task is inspectable
     // and replayable within a process lifetime, but does not survive a restart. SQS gives a
-    // durable DLQ for free once the queue itself moves (see WAYFINDER.md).
+    // durable DLQ for free once the queue itself moves (see the README's status section).
     deadLetter.set(id, { task, error, attempts: attempts.get(id), failedAt: stamp() });
     return;
   }

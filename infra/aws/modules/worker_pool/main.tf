@@ -32,7 +32,7 @@ resource "aws_ecs_task_definition" "worker" {
         logDriver = "awslogs"
         options = {
           "awslogs-group"         = aws_cloudwatch_log_group.worker.name
-          "awslogs-region"        = data.aws_region.current.name
+          "awslogs-region"        = data.aws_region.current.region
           "awslogs-stream-prefix" = "worker"
         }
       }
@@ -71,7 +71,7 @@ resource "aws_appautoscaling_target" "worker" {
 # Target-tracking on CPU rather than queue depth: queue depth lives in the API process, not in
 # a CloudWatch metric, so it isn't something ECS Application Auto Scaling can read natively.
 # This is what makes the pool actually move; POST /orchestrator/scale still only computes a
-# number today (see WAYFINDER.md).
+# number today (see the status section in the repo README).
 resource "aws_appautoscaling_policy" "worker_cpu" {
   name               = "${var.name}-cpu-target-tracking"
   policy_type        = "TargetTrackingScaling"

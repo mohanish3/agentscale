@@ -205,8 +205,6 @@ Also outstanding:
   service — but it tracks CPU utilization, not queue depth, because queue depth lives in this
   process rather than a CloudWatch metric ECS can read. This endpoint is still informational
   only until the queue itself moves out of process.
-- **Long agent runs can double-execute.** No lease renewal, so a task outliving
-  `TASK_VISIBILITY_MS` is handed to a second worker while the first still holds it.
 - Task records, results and the LangChain registry are in-memory, so they clear on restart.
   Task records are no longer unbounded — anything finished ages out after `TASK_RETENTION_MS`
   (24h default), which also drops its webhook dedupe key, so a redelivery older than that window

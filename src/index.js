@@ -113,7 +113,7 @@ if (require.main === module) {
   // sockets (workers hold one open between polls).
   // ponytail: this closes the listener, it does not make the queue durable — whatever is still
   // queued or leased dies with the process either way, because the queue is in-process. That
-  // gap is the SQS item in WAYFINDER.md, not something a signal handler can close.
+  // gap is the queue item in the README's status section, not something a signal handler closes.
   for (const signal of ['SIGTERM', 'SIGINT']) {
     process.on(signal, () => {
       server.close(() => process.exit(0));
