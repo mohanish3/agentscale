@@ -10,18 +10,54 @@ const servers = new Map(); // name -> { name, url, registeredAt }
 // (169.254.169.254) — and infra/aws takes a task_role_arn, so those credentials are real.
 // Behind WORKER_TOKEN, but a leaked worker token should not also be an AWS credential read.
 //
-// ponytail: blocks the link-local block by literal hostname only. A DNS name that resolves
-// there, or a redirect to it, still gets through — fetch follows redirects by default. Set
-// LANGCHAIN_ALLOWED_HOSTS to pin an explicit allowlist, which is the real answer.
+// new URL() normalizes a host before it ever reaches the check: an IPv4 address arrives as
+// a dotted quad, and an IPv4 address spelled as an IPv4-mapped IPv6 literal arrives as hex
+// ([::ffff:169.254.169.254] -> [::ffff:a9fe:a9fe]). A block that matches the literal
+// hostname only therefore had a hole — the metadata endpoint, wearing a v6 costume, sailed
+// through and dispatch() POSTed straight to it. Reduce any v4-flavoured host to one dotted
+// quad so the range test below is spelling-proof.
+function effectiveV4(hostname) {
+  let h = hostname;
+  if (h.startsWith('[') && h.endsWith(']')) h = h.slice(1, -1); // IPv6 hosts arrive bracketed
+  const mapped = h.match(/^::ffff:(.+)/);
+  if (mapped) {
+    const dotted = mapped[1].match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    if (dotted) return dotted.slice(1).join('.'); // [::ffff:a.b.c.d]
+    const hex = mapped[1].match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
+    if (hex) { // [::ffff:hhhh:hhhh] — the same v4 address in its normalized hex form
+      const hi = Number.parseInt(hex[1], 16);
+      const lo = Number.parseInt(hex[2], 16);
+      return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
+    }
+    return null; // a v6 address that is not a clean v4 mapping is not a v4
+  }
+  if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h)) return h; // plain dotted quad
+  if (/^\d+$/.test(h)) { // a single decimal-integer spelling of the same address
+    const n = Number(h);
+    if (Number.isFinite(n) && n <= 0xffffffff) {
+      return `${(n >>> 24) & 0xff}.${(n >>> 16) & 0xff}.${(n >>> 8) & 0xff}.${n & 0xff}`;
+    }
+  }
+  return null; // a name, or a non-mapped v6
+}
+
+// ponytail: blocks the link-local 169.254/16 range and the one task-role v6 address.
+// A DNS name that resolves there, or a redirect to it, still gets through — fetch follows
+// redirects by default (dispatch() already refuses those). Set LANGCHAIN_ALLOWED_HOSTS to
+// pin an explicit allowlist, which is the real answer.
 function assertAllowedHost(hostname) {
   const allowed = (process.env.LANGCHAIN_ALLOWED_HOSTS ?? '').split(',').map((h) => h.trim()).filter(Boolean);
   if (allowed.length > 0) {
     if (!allowed.includes(hostname)) throw new Error('url host is not allowed');
     return;
   }
-  if (/^169\.254\./.test(hostname) || hostname === '[fd00:ec2::254]') {
-    throw new Error('url host is not allowed');
+  const v4 = effectiveV4(hostname);
+  if (v4) {
+    const [first, second] = v4.split('.');
+    if (first === '169' && second === '254') throw new Error('url host is not allowed');
+    return;
   }
+  if (hostname === '[fd00:ec2::254]') throw new Error('url host is not allowed');
 }
 
 function register({ name, url } = {}) {
