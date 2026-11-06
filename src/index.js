@@ -48,6 +48,17 @@ app.use('/n8n', requireWorkerToken, n8n.router);
 app.use('/langchain', requireWorkerToken, langchainWorkers.router);
 app.use('/orchestrator', requireWorkerToken, orchestrator.router);
 
+// A plain entry point for work with no provider in front: an operator or caller with a
+// worker token hands the pool an arbitrary payload, no webhook signing or n8n export.
+// An idempotencyKey makes the submission safe to retry the same way webhook redeliveries
+// are: a repeat resolves the original task, including one that has already finished.
+app.post('/tasks', requireWorkerToken, (req, res) => {
+  const { payload, idempotencyKey } = req.body ?? {};
+  if (payload === undefined) return res.status(400).json({ error: 'payload is required' });
+  const task = queue.enqueue('http', payload, idempotencyKey);
+  res.status(202).json({ taskId: task.id });
+});
+
 // Workers pull from the same queue everything else dispatches into.
 app.post('/tasks/next', requireWorkerToken, (req, res) => {
   const task = queue.lease();
