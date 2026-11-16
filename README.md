@@ -3,8 +3,8 @@
 On-demand cloud infrastructure for agent workers, built for scaled orgs running many concurrent AI agents.
 
 `agentscale` provisions and manages AWS-backed worker pools for agent execution, and exposes a single
-integration surface — webhooks, inbound events, n8n workflows, and custom LangChain servers all dispatch
-into the same worker pool.
+integration surface — webhooks, inbound events, n8n workflows, custom LangChain servers, and
+direct submissions all dispatch into the same worker pool.
 
 ## What it does
 
@@ -117,6 +117,7 @@ delivery guarantees above.
 | `POST /orchestrator/scale` | token | Recompute desired worker count from queue depth. Optional body: `tasksPerWorker`, `min`, `max`. |
 | `GET /orchestrator/workers` | token | Desired count, queue depth and per-worker health. |
 | `POST /orchestrator/workers/:id/heartbeat` | token | Worker liveness ping (unhealthy after 30s of silence, dropped from the list after 5 min). |
+| `POST /tasks` | token | Submit work directly: `{ "payload": ..., "idempotencyKey": "..." }`. Returns `202 { taskId }`; a repeated `idempotencyKey` resolves the original task, including one already finished. `400` without a `payload`. |
 | `POST /tasks/next` | token | Worker leases the next task; `204` when nothing is waiting. |
 | `POST /tasks/:id/result` | token | Release the lease with `{ status: "succeeded", result }` or `{ status: "failed", error }`. |
 | `POST /tasks/:id/renew` | token | Extend the lease on a task still running: `{ "leaseToken": "..." }`. `409` once the lease is gone — superseded, or held past `TASK_MAX_LEASE_MS`. |
