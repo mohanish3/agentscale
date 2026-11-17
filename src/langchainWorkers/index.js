@@ -1,4 +1,5 @@
 const express = require('express');
+const net = require('node:net');
 
 // ponytail: in-memory registry, lost on restart — servers re-register on boot.
 // Move to the same store as the queue when that stops being in-process.
@@ -22,6 +23,38 @@ function assertAllowedHost(hostname) {
   if (/^169\.254\./.test(hostname) || hostname === '[fd00:ec2::254]') {
     throw new Error('url host is not allowed');
   }
+  // An IPv6-mapped spelling (::ffff:169.254.x.x) normalises to a hex form that the
+  // literal regex above misses. Expand it to dotted-quad and apply the same check.
+  const mapped = ipv4FromMappedIpv6(hostname);
+  if (mapped && /^169\.254\./.test(mapped)) {
+    throw new Error('url host is not allowed');
+  }
+}
+
+// Expand an IPv6-mapped address (::ffff:x.x.x.x, any of its hex spellings) to dotted-quad.
+// Returns null for non-mapped / non-IPv6 input so the caller can skip the check.
+function ipv4FromMappedIpv6(hostname) {
+  let addr = hostname;
+  if (addr.startsWith('[') && addr.endsWith(']')) addr = addr.slice(1, -1);
+  if (net.isIP(addr) !== 6) return null;
+  let groups;
+  if (addr.includes('::')) {
+    const [left, right] = addr.split('::');
+    const leftParts = left ? left.split(':') : [];
+    const rightParts = right ? right.split(':') : [];
+    const fill = 8 - leftParts.length - rightParts.length;
+    if (fill < 1) return null;
+    groups = [...leftParts, ...Array(fill).fill('0'), ...rightParts];
+  } else {
+    groups = addr.split(':');
+  }
+  if (groups.length !== 8) return null;
+  // IPv4-mapped: 0:0:0:0:0:ffff:x:y
+  if (groups.slice(0, 5).some((g) => parseInt(g, 16) !== 0)) return null;
+  if (parseInt(groups[5], 16) !== 0xffff) return null;
+  const hi = parseInt(groups[6], 16);
+  const lo = parseInt(groups[7], 16);
+  return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
 }
 
 function register({ name, url } = {}) {

@@ -16,6 +16,18 @@ test('refuses to register a link-local host', () => {
   assert.throws(() => register({ name: 'v6', url: 'http://[fd00:ec2::254]/' }), /not allowed/);
 });
 
+// The guard is documented to block "the link-local block" (169.254.x) so a leaked worker
+// token cannot become an AWS credential read. It matches the dotted-quad hostname literally
+// (plus one exact IPv6 literal), but the SAME 169.254.169.254 metadata address can be spelled
+// in IPv6-mapped form, which Node normalizes to hex: [::ffff:169.254.169.254] ->
+// [::ffff:a9fe:a9fe]. That matches neither /^169\.254\./ nor the [fd00:ec2::254] literal, so
+// register() accepts it and dispatch() will POST to the metadata endpoint. Both spellings are
+// the identical link-local address and must be refused like the dotted form.
+test('refuses the IPv6-mapped spelling of a link-local metadata host', () => {
+  assert.throws(() => register({ name: 'imds-mapped', url: 'http://[::ffff:169.254.169.254]/' }), /not allowed/);
+  assert.throws(() => register({ name: 'imds-mapped-hex', url: 'http://[::ffff:a9fe:a9fe]/' }), /not allowed/);
+});
+
 test('an explicit allowlist replaces the default block', () => {
   process.env.LANGCHAIN_ALLOWED_HOSTS = 'chains.internal, other.internal';
   try {
