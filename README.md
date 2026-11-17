@@ -208,9 +208,12 @@ Also outstanding:
 - Task records, results and the LangChain registry are in-memory, so they clear on restart.
   Task records are no longer unbounded — anything finished ages out after `TASK_RETENTION_MS`
   (24h default), which also drops its webhook dedupe key, so a redelivery older than that window
-  runs the agent again. The LangChain registry still has no expiry. Dead-lettered tasks (`GET
-  /tasks/dead-letter`) are inspectable and replayable within the retention window, but they're
-  not a durable DLQ until the queue is.
+  runs the agent again. The LangChain registry ages out the same way: a server idle past
+  `LANGCHAIN_REGISTRY_TTL_MS` (24h default) is dropped by a lazy sweep at read time, refreshed on
+  each successful dispatch, so a long-lived API keeps only the servers it is actually using. A
+  real client re-registers on boot, so an idle server that ages out just re-registers on its next
+  dispatch. Dead-lettered tasks (`GET /tasks/dead-letter`) are inspectable and replayable within
+  the retention window, but they're not a durable DLQ until the queue is.
 - **A registered LangChain server is a URL the API will POST to and return the body from.**
   The link-local range is blocked by default so a leaked `WORKER_TOKEN` isn't also an AWS
   credential read, but that check is hostname-only — a DNS name resolving there, or a redirect,
